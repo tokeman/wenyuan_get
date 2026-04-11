@@ -1,37 +1,54 @@
 #!/bin/bash
 # 文元获取工具 (wenyuan_get) - 主入口
-# 用法: wenyuan_get.sh <关键词> [论文1] [论文2] ...
-# 示例: wenyuan_get.sh "multilingual LLM alignment"
+# 用法: wenyuan_get.sh <关键词> [论文1] [论文2] ... [-R|-E|-B]
+# 示例: wenyuan_get.sh "BCI" -B
 
 set -e
 
 TOOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK_DIR="${WORK_DIR:-$(pwd)}"
-INPUT_KEYWORDS="$1"
+INPUT_KEYWORDS=""
+PAPERS=""
+MODE="B"  # B=Both, R=Rendered, E=Editable
+
+# 解析参数
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -R|-E|-B)
+            MODE="${1#-}"
+            shift
+            ;;
+        -*)
+            echo "未知选项: $1"
+            exit 1
+            ;;
+        *)
+            if [ -z "$INPUT_KEYWORDS" ]; then
+                INPUT_KEYWORDS="$1"
+            else
+                PAPERS="${PAPERS}${PAPERS:+\n}- $1"
+            fi
+            shift
+            ;;
+    esac
+done
 
 if [ -z "$INPUT_KEYWORDS" ]; then
-    echo "用法: wenyuan_get <关键词> [论文1] [论文2] ..."
-    echo "示例: wenyuan_get \"multilingual LLM alignment\""
+    echo "用法: wenyuan_get <关键词> [论文1] [论文2] ... [-R|-E|-B]"
+    echo "  -R: R 版本（PNG 渲染图，兼容性最强）"
+    echo "  -E: E 版本（SVG 直接导入，PowerPoint 2021+ 可完全编辑）"
+    echo "  -B: 双版本同时生成（默认）"
+    echo "示例: wenyuan_get \"BCI neural interfaces\" -B"
     exit 1
 fi
 
-# 自动从关键词生成输出文件名
+# 生成文件名（从关键词提取）
 sanitized=$(echo "$INPUT_KEYWORDS" | tr ' ' '_' | tr -cd 'a-zA-Z0-9_\-\u4e00-\u9fff')
-TIMESTAMP=$(date +%Y%m%d)
-OUTPUT_FILE="${WORK_DIR}/${sanitized}_${TIMESTAMP}.pptx"
+OUTPUT_PREFIX="${WORK_DIR}/${sanitized}"
 
 mkdir -p "$WORK_DIR"
 
 # 构建 Prompt
-shift
-PAPERS=""
-if [ $# -gt 0 ]; then
-    PAPERS=$(printf '%s\n' "$@")
-    PAPERS=$(echo "$PAPERS" | sed 's/^/   - /')
-else
-    PAPERS="   - 自动检索 ${INPUT_KEYWORDS} 相关的前沿论文"
-fi
-
 cat > "${WORK_DIR}/prompt.txt" << EOF
 # Role: AI Research Visualizer & Analyzer
 你的任务是根据用户提供的"关键词"或"论文"，自动提取核心信息，并输出高质量的 SVG 汇报矢量图。
@@ -41,12 +58,13 @@ cat > "${WORK_DIR}/prompt.txt" << EOF
 
 ---
 请帮我检索并总结以下论文，分别生成汇报 SVG 卡片：
-${PAPERS}
+${PAPERS:+$(echo -e "$PAPERS")}
 关键词: ${INPUT_KEYWORDS}
 EOF
 
 echo "=========================================="
 echo "文元获取工具 | 关键词: ${INPUT_KEYWORDS}"
+echo "模式: $([ "$MODE" = "B" ] && echo "双版本 (R + E)" || echo "$MODE 版本")"
 echo "=========================================="
 echo "1. 生成 Prompt... ✅"
 echo "2. 调用 Gemini CLI 生成 SVG..."
@@ -61,21 +79,28 @@ else
     exit 1
 fi
 
-# 统计 SVG 数量
 SVG_COUNT=$(grep -c '<svg' "${WORK_DIR}/output.md" 2>/dev/null || echo 0)
 echo "   生成 ${SVG_COUNT} 张 SVG 卡片"
 
-# 渲染 PPTX
 echo ""
 echo "3. 渲染 SVG → PPTX..."
-python3 "${TOOL_DIR}/svg_to_ppt.py" "${WORK_DIR}/output.md" "${OUTPUT_FILE}" 2>&1
 
-if [ $? -eq 0 ]; then
-    echo "=========================================="
-    echo "✅ 完成！"
-    echo "   文件: ${OUTPUT_FILE}"
-    echo "   页数: ${SVG_COUNT} 页"
+MODE_NAME="$MODE"
+[ "$MODE" = "B" ] && MODE_NAME="B (双版本)"
+
+python3 "${TOOL_DIR}/svg_to_ppt.py" \
+    "${WORK_DIR}/output.md" \
+    "${OUTPUT_PREFIX}" \
+    "${MODE_NAME}" 2>&1
+
+echo ""
+echo "=========================================="
+echo "✅ 完成！"
+if [ "$MODE" = "B" ]; then
+    echo "   R 版本: ${OUTPUT_PREFIX}_R.pptx"
+    echo "   E 版本: ${OUTPUT_PREFIX}_E.pptx"
 else
-    echo "❌ PPTX 渲染失败"
-    exit 1
+    echo "   文件: ${OUTPUT_PREFIX}_${MODE}.pptx"
 fi
+echo "   SVG 文件: ${OUTPUT_PREFIX}_E_svg_files/"
+echo "   页数: ${SVG_COUNT} 页"
