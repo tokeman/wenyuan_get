@@ -79,6 +79,7 @@ def render_e(svg_blocks, output_file):
         media_dir = os.path.join(tmpdir, 'ppt', 'media')
         os.makedirs(media_dir, exist_ok=True)
 
+        # 追踪是否有任何 PNG 成功生成，用于 Content_Types 注册
         has_any_png = False
 
         for i, svg in enumerate(svg_blocks):
@@ -86,40 +87,41 @@ def render_e(svg_blocks, output_file):
             svg_filename = f'image_{slide_idx}.svg'
             png_filename = f'image_{slide_idx}_fallback.png'
 
-            # 写 SVG 文件（始终写入）
+            # 写 SVG 文件
             svg_abs = os.path.join(media_dir, svg_filename)
             with open(svg_abs, 'w', encoding='utf-8') as f:
                 f.write(svg)
 
-            # 写 PNG 备用图（可能失败）
-            png_abs = os.path.join(media_dir, png_filename)
+            # 生成 PNG 备用图
             png_bytes = None
             try:
                 png_bytes = cairosvg.svg2png(
                     bytestring=svg.encode('utf-8'),
                     output_width=1920, output_height=1080
                 )
+                png_abs = os.path.join(media_dir, png_filename)
                 with open(png_abs, 'wb') as f:
                     f.write(png_bytes)
                 has_any_png = True
             except Exception as e:
-                print(f"  Slide {slide_idx}: PNG fallback failed ({e})")
+                print(f"  Slide {slide_idx}: PNG fallback failed ({e}), SVG only")
 
-            # Bug 1 fix: 只在有 PNG 时才注入 PNG 关系
+            # 双轨注入
             _inject_svg_png_dual(
                 tmpdir, slide_idx,
                 svg_filename, png_filename,
-                has_png=(png_bytes is not None)
+                has_png=png_bytes is not None
             )
 
-        # Bug 2 fix: Content-Type 按实际存在的内容注册
+        # 循环结束后统一注册 Content_Types（按实际文件情况）
         _ensure_content_types(tmpdir, include_png=has_any_png)
 
-        # 重新打包（Windows fix: 路径分隔符转正斜杠）
+        # 重新打包（修复 Windows 路径分隔符问题）
         with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zout:
             for root_dir, dirs, files in os.walk(tmpdir):
                 for file in files:
                     filepath = os.path.join(root_dir, file)
+                    # 统一用正斜杠，Windows 上 os.sep 是反斜杠会导致 ZIP 路径错误
                     arcname = os.path.relpath(filepath, tmpdir).replace(os.sep, '/')
                     zout.write(filepath, arcname)
 
@@ -130,7 +132,10 @@ def render_e(svg_blocks, output_file):
 
 
 def _ensure_content_types(tmpdir, include_png=True):
-    """确保 [Content_Types].xml 有 png 和 svg 条目（按需）"""
+    """
+    注册 [Content_Types].xml 中的媒体类型。
+    svg 始终注册；png 仅在 include_png=True 时注册（即确实有 PNG 文件时）。
+    """
     ct_path = os.path.join(tmpdir, '[Content_Types].xml')
     ct_tree = etree.parse(ct_path)
     ct_root = ct_tree.getroot()
@@ -140,9 +145,11 @@ def _ensure_content_types(tmpdir, include_png=True):
         el.get('Extension')
         for el in ct_root.findall(f'{{{svg_ct_ns}}}Default')
     }
+
     types_to_add = [('svg', 'image/svg+xml')]
     if include_png:
         types_to_add.append(('png', 'image/png'))
+
     for ext, ct in types_to_add:
         if ext not in existing_exts:
             el = etree.SubElement(ct_root, f'{{{svg_ct_ns}}}Default')
@@ -154,11 +161,13 @@ def _ensure_content_types(tmpdir, include_png=True):
 
 def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png):
     """
-    双轨注入：slide XML + .rels + PNG 备用图
+    双轨注入：slide XML + .rels
 
     结构：
       PNG 作为主 blip（兼容性保底）
       SVG 作为 extLst 扩展层（矢量覆盖，PowerPoint 2021+ 优先渲染）
+
+    has_png=False 时退化为纯 SVG 引用，不写入 PNG 关系。
     """
     slide_path = os.path.join(tmpdir, 'ppt', 'slides', f'slide{slide_idx}.xml')
     rels_path  = os.path.join(tmpdir, 'ppt', 'slides', '_rels', f'slide{slide_idx}.xml.rels')
@@ -204,7 +213,7 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
           </p:spPr>
         </p:pic>'''
     else:
-        # 纯 SVG（无 PNG 时退化为简单引用）
+        # 纯 SVG（PNG 生成失败时退化）
         pic_xml = f'''<p:pic
             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
             xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -236,14 +245,16 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
         sp_tree.append(etree.fromstring(pic_xml))
         tree.write(slide_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 2. 更新 .rels（Bug 1 fix: 只写实际存在的文件对应关系）──
+    # ── 2. 更新 .rels（按 has_png 决定写几条关系）──
     rels_tree = etree.parse(rels_path)
     rels_root = rels_tree.getroot()
     img_type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
 
-    rels_to_add = [(rel_id_svg, f'../media/{svg_filename}')]
+    # 构造需要写入的关系列表：has_png=False 时只写 SVG 那条
+    rels_to_add = []
     if has_png:
-        rels_to_add.insert(0, (rel_id_png, f'../media/{png_filename}'))
+        rels_to_add.append((rel_id_png, f'../media/{png_filename}'))
+    rels_to_add.append((rel_id_svg, f'../media/{svg_filename}'))
 
     for rel_id, target in rels_to_add:
         el = etree.SubElement(rels_root, 'Relationship')
@@ -253,7 +264,7 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
 
     rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 3. Content_Types 已在 _ensure_content_types 统一处理 ──
+    # Content_Types 已由 _ensure_content_types 统一处理，此处无需操作
 
 
 def _add_notes(slide, text):
