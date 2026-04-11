@@ -49,18 +49,26 @@ OUTPUT_PREFIX="${WORK_DIR}/${sanitized}"
 mkdir -p "$WORK_DIR"
 
 # 构建 Prompt
-cat > "${WORK_DIR}/prompt.txt" << EOF
+cat > "${WORK_DIR}/prompt.txt" << 'PROMPT_EOF'
 # Role: AI Research Visualizer & Analyzer
 你的任务是根据用户提供的"关键词"或"论文"，自动提取核心信息，并输出高质量的 SVG 汇报矢量图。
-(请确保输出包含完整的 <svg>...</svg> 代码块，采用宽屏 1280x720 比例，使用淡蓝色、青绿色等专业配色，布局采用四宫格或三栏式，重点突出痛点、核心机制和突破性数据指标。不要输出任何外部图片链接。)
 
-**重要：字体必须使用 "Noto Sans CJK SC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif，以确保中文正常显示。**
+**重要格式要求：**
+- 分辨率: `width="1280" height="720" viewBox="0 0 1280 720"`
+- 命名空间: `xmlns="http://www.w3.org/2000/svg"`
+- 字体: `font-family="Noto Sans CJK SC, sans-serif"`（确保中文正常显示）
+
+**SVG 兼容性约束（PowerPoint 直接打开）：**
+1. 禁止外部引用：不引用外部图片、样式表、字体文件
+2. 禁止脚本：不包含 JavaScript、CSS 动画
+3. 路径优先：复杂图形用 `<path>` 代替 `<text>`（避免字体缺失方框）
+4. 精简滤镜：尽量用纯色填充，避免复杂 SVG 滤镜
 
 ---
 请帮我检索并总结以下论文，分别生成汇报 SVG 卡片：
 ${PAPERS:+$(echo -e "$PAPERS")}
 关键词: ${INPUT_KEYWORDS}
-EOF
+PROMPT_EOF
 
 echo "=========================================="
 echo "文元获取工具 | 关键词: ${INPUT_KEYWORDS}"
