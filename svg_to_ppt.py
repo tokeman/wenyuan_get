@@ -79,19 +79,21 @@ def render_e(svg_blocks, output_file):
         media_dir = os.path.join(tmpdir, 'ppt', 'media')
         os.makedirs(media_dir, exist_ok=True)
 
-        # 先注册 PNG + SVG Content-Type（只插入一次）
-        _ensure_content_types(tmpdir)
+        has_any_png = False
 
         for i, svg in enumerate(svg_blocks):
             slide_idx = i + 1
             svg_filename = f'image_{slide_idx}.svg'
             png_filename = f'image_{slide_idx}_fallback.png'
 
-            # 写 SVG 和 PNG 两个文件
+            # 写 SVG 文件（始终写入）
             svg_abs = os.path.join(media_dir, svg_filename)
-            png_abs = os.path.join(media_dir, png_filename)
             with open(svg_abs, 'w', encoding='utf-8') as f:
                 f.write(svg)
+
+            # 写 PNG 备用图（可能失败）
+            png_abs = os.path.join(media_dir, png_filename)
+            png_bytes = None
             try:
                 png_bytes = cairosvg.svg2png(
                     bytestring=svg.encode('utf-8'),
@@ -99,23 +101,26 @@ def render_e(svg_blocks, output_file):
                 )
                 with open(png_abs, 'wb') as f:
                     f.write(png_bytes)
+                has_any_png = True
             except Exception as e:
                 print(f"  Slide {slide_idx}: PNG fallback failed ({e})")
-                png_bytes = None
 
-            # 双轨注入
+            # Bug 1 fix: 只在有 PNG 时才注入 PNG 关系
             _inject_svg_png_dual(
                 tmpdir, slide_idx,
                 svg_filename, png_filename,
-                svg, png_bytes is not None
+                has_png=(png_bytes is not None)
             )
 
-        # 重新打包
+        # Bug 2 fix: Content-Type 按实际存在的内容注册
+        _ensure_content_types(tmpdir, include_png=has_any_png)
+
+        # 重新打包（Windows fix: 路径分隔符转正斜杠）
         with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zout:
             for root_dir, dirs, files in os.walk(tmpdir):
                 for file in files:
                     filepath = os.path.join(root_dir, file)
-                    arcname = os.path.relpath(filepath, tmpdir)
+                    arcname = os.path.relpath(filepath, tmpdir).replace(os.sep, '/')
                     zout.write(filepath, arcname)
 
         print(f"E saved: {output_file} ({len(svg_blocks)} slides, SVG+PNG dual-track)")
@@ -124,8 +129,8 @@ def render_e(svg_blocks, output_file):
         shutil.rmtree(tmpdir)
 
 
-def _ensure_content_types(tmpdir):
-    """确保 [Content_Types].xml 有 png 和 svg 条目"""
+def _ensure_content_types(tmpdir, include_png=True):
+    """确保 [Content_Types].xml 有 png 和 svg 条目（按需）"""
     ct_path = os.path.join(tmpdir, '[Content_Types].xml')
     ct_tree = etree.parse(ct_path)
     ct_root = ct_tree.getroot()
@@ -135,7 +140,10 @@ def _ensure_content_types(tmpdir):
         el.get('Extension')
         for el in ct_root.findall(f'{{{svg_ct_ns}}}Default')
     }
-    for ext, ct in [('svg', 'image/svg+xml'), ('png', 'image/png')]:
+    types_to_add = [('svg', 'image/svg+xml')]
+    if include_png:
+        types_to_add.append(('png', 'image/png'))
+    for ext, ct in types_to_add:
         if ext not in existing_exts:
             el = etree.SubElement(ct_root, f'{{{svg_ct_ns}}}Default')
             el.set('Extension', ext)
@@ -144,7 +152,7 @@ def _ensure_content_types(tmpdir):
     ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
 
-def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, svg_content, has_png):
+def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png):
     """
     双轨注入：slide XML + .rels + PNG 备用图
 
@@ -228,15 +236,16 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, svg_cont
         sp_tree.append(etree.fromstring(pic_xml))
         tree.write(slide_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 2. 更新 .rels（PNG + SVG 两条关系）──
+    # ── 2. 更新 .rels（Bug 1 fix: 只写实际存在的文件对应关系）──
     rels_tree = etree.parse(rels_path)
     rels_root = rels_tree.getroot()
     img_type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
 
-    for rel_id, target in [
-        (rel_id_png, f'../media/{png_filename}'),
-        (rel_id_svg, f'../media/{svg_filename}'),
-    ]:
+    rels_to_add = [(rel_id_svg, f'../media/{svg_filename}')]
+    if has_png:
+        rels_to_add.insert(0, (rel_id_png, f'../media/{png_filename}'))
+
+    for rel_id, target in rels_to_add:
         el = etree.SubElement(rels_root, 'Relationship')
         el.set('Id', rel_id)
         el.set('Type', img_type)
