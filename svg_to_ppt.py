@@ -37,6 +37,11 @@ def render_r(svg_blocks, output_file):
     prs.slide_height = Inches(9)
 
     for i, svg in enumerate(svg_blocks):
+        # Fix: replace Arial with CJK-compatible font before rendering
+        svg = svg.replace(
+            'font-family="Arial, sans-serif"',
+            'font-family="Noto Sans CJK SC, Arial, sans-serif"'
+        )
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         try:
             png = cairosvg.svg2png(
@@ -87,16 +92,22 @@ def render_e(svg_blocks, output_file):
             svg_filename = f'image_{slide_idx}.svg'
             png_filename = f'image_{slide_idx}_fallback.png'
 
-            # 写 SVG 文件
+            # Fix: 替换字体使中文正常显示
+            svg_fixed = svg.replace(
+                'font-family="Arial, sans-serif"',
+                'font-family="Noto Sans CJK SC, Arial, sans-serif"'
+            )
+
+            # 写 SVG 文件（用修复后的字体）
             svg_abs = os.path.join(media_dir, svg_filename)
             with open(svg_abs, 'w', encoding='utf-8') as f:
-                f.write(svg)
+                f.write(svg_fixed)
 
             # 生成 PNG 备用图
             png_bytes = None
             try:
                 png_bytes = cairosvg.svg2png(
-                    bytestring=svg.encode('utf-8'),
+                    bytestring=svg_fixed.encode('utf-8'),
                     output_width=1920, output_height=1080
                 )
                 png_abs = os.path.join(media_dir, png_filename)
