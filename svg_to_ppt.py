@@ -2,7 +2,10 @@
 svg_to_ppt.py - SVG 转 PPTX 渲染器（支持 R/E 双版本）
 
 R 版本（Rendered）：cairosvg 渲染为 PNG，最佳兼容性
-E 版本（Editable）：SVG 文件直接打包，PowerPoint 2021+ 可通过"图片转为形状"完全编辑
+E 版本（Editable）：SVG + PNG 双轨嵌入，飞书/邮件转发不白屏
+
+双轨结构：PowerPoint 用 PNG 做主图保底，SVG 作为矢量扩展层叠加。
+支持 SVG 的客户端（PPT 2021+）显示矢量，不支持的自动降级 PNG。
 """
 
 import re
@@ -52,12 +55,12 @@ def render_r(svg_blocks, output_file):
 
 
 # ─────────────────────────────────────────
-# E 版本：SVG 直接嵌入（XML 级别注入）
-# PowerPoint 2021+ 支持 SVG 直接导入，可取消组合编辑
+# E 版本：SVG + PNG 双轨嵌入
+# PowerPoint 2021+ 显示矢量，客户端降级显示 PNG
 # ─────────────────────────────────────────
 def render_e(svg_blocks, output_file):
-    """SVG 源码直嵌版 — PowerPoint 2021+ 可完全编辑"""
-    print(f"Building E (Editable SVG): {output_file}")
+    """SVG+PNG 双轨版 — 飞书/邮件转发不白屏"""
+    print(f"Building E (SVG+PNG dual-track): {output_file}")
 
     # 1. 创建基础 PPTX
     prs = Presentation()
@@ -67,7 +70,7 @@ def render_e(svg_blocks, output_file):
         prs.slides.add_slide(prs.slide_layouts[6])
     prs.save(output_file)
 
-    # 2. 解压 PPTX，注入 SVG
+    # 2. 解压，注入 SVG + PNG 双轨
     tmpdir = tempfile.mkdtemp()
     try:
         with zipfile.ZipFile(output_file, 'r') as z:
@@ -76,34 +79,36 @@ def render_e(svg_blocks, output_file):
         media_dir = os.path.join(tmpdir, 'ppt', 'media')
         os.makedirs(media_dir, exist_ok=True)
 
-        # Bug 2 fix: 先检查 [Content_Types].xml 是否已有 svg 条目
-        ct_path = os.path.join(tmpdir, '[Content_Types].xml')
-        ct_tree = etree.parse(ct_path)
-        ct_root = ct_tree.getroot()
-        svg_ct_ns = 'http://schemas.openxmlformats.org/package/2006/content-types'
-        already_has_svg = any(
-            el.get('Extension') == 'svg'
-            for el in ct_root.findall(f'{{{svg_ct_ns}}}Default')
-        )
+        # 先注册 PNG + SVG Content-Type（只插入一次）
+        _ensure_content_types(tmpdir)
 
         for i, svg in enumerate(svg_blocks):
             slide_idx = i + 1
             svg_filename = f'image_{slide_idx}.svg'
-            svg_abs = os.path.join(media_dir, svg_filename)
+            png_filename = f'image_{slide_idx}_fallback.png'
 
-            # 写 SVG 文件
+            # 写 SVG 和 PNG 两个文件
+            svg_abs = os.path.join(media_dir, svg_filename)
+            png_abs = os.path.join(media_dir, png_filename)
             with open(svg_abs, 'w', encoding='utf-8') as f:
                 f.write(svg)
+            try:
+                png_bytes = cairosvg.svg2png(
+                    bytestring=svg.encode('utf-8'),
+                    output_width=1920, output_height=1080
+                )
+                with open(png_abs, 'wb') as f:
+                    f.write(png_bytes)
+            except Exception as e:
+                print(f"  Slide {slide_idx}: PNG fallback failed ({e})")
+                png_bytes = None
 
-            # 注入 XML（传 svg_filename，不含路径）
-            _inject_svg_into_slide(tmpdir, slide_idx, svg_filename)
-
-        # Bug 2 fix: svg 类型声明只插入一次（在所有幻灯片处理完后）
-        if not already_has_svg:
-            new_ct = etree.SubElement(ct_root, f'{{{svg_ct_ns}}}Default')
-            new_ct.set('Extension', 'svg')
-            new_ct.set('ContentType', 'image/svg+xml')
-            ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8', standalone=True)
+            # 双轨注入
+            _inject_svg_png_dual(
+                tmpdir, slide_idx,
+                svg_filename, png_filename,
+                svg, png_bytes is not None
+            )
 
         # 重新打包
         with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zout:
@@ -113,54 +118,108 @@ def render_e(svg_blocks, output_file):
                     arcname = os.path.relpath(filepath, tmpdir)
                     zout.write(filepath, arcname)
 
-        print(f"E saved: {output_file} ({len(svg_blocks)} SVG embedded)")
+        print(f"E saved: {output_file} ({len(svg_blocks)} slides, SVG+PNG dual-track)")
 
     finally:
         shutil.rmtree(tmpdir)
 
 
-def _inject_svg_into_slide(tmpdir, slide_idx, svg_filename):
-    """
-    向 slide XML 中注入 SVG 图片引用
+def _ensure_content_types(tmpdir):
+    """确保 [Content_Types].xml 有 png 和 svg 条目"""
+    ct_path = os.path.join(tmpdir, '[Content_Types].xml')
+    ct_tree = etree.parse(ct_path)
+    ct_root = ct_tree.getroot()
+    svg_ct_ns = 'http://schemas.openxmlformats.org/package/2006/content-types'
 
-    Bug 修复记录：
-    - Bug 1: Target 路径改为相对于 .rels 文件的路径（../media/...）
-    - Bug 2: [Content_Types].xml 的 svg 条目在 render_e 顶层统一处理
-    - Bug 3: cNvPicPr 添加 picLocks，id 改为唯一值
+    existing_exts = {
+        el.get('Extension')
+        for el in ct_root.findall(f'{{{svg_ct_ns}}}Default')
+    }
+    for ext, ct in [('svg', 'image/svg+xml'), ('png', 'image/png')]:
+        if ext not in existing_exts:
+            el = etree.SubElement(ct_root, f'{{{svg_ct_ns}}}Default')
+            el.set('Extension', ext)
+            el.set('ContentType', ct)
+
+    ct_tree.write(ct_path, xml_declaration=True, encoding='UTF-8', standalone=True)
+
+
+def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, svg_content, has_png):
+    """
+    双轨注入：slide XML + .rels + PNG 备用图
+
+    结构：
+      PNG 作为主 blip（兼容性保底）
+      SVG 作为 extLst 扩展层（矢量覆盖，PowerPoint 2021+ 优先渲染）
     """
     slide_path = os.path.join(tmpdir, 'ppt', 'slides', f'slide{slide_idx}.xml')
     rels_path  = os.path.join(tmpdir, 'ppt', 'slides', '_rels', f'slide{slide_idx}.xml.rels')
 
     slide_w, slide_h = 12192000, 6858000   # EMU: 16×9 inches
-    rel_id = f'rId9999_{slide_idx}'
+    rel_id_png = f'rId_png_{slide_idx}'
+    rel_id_svg = f'rId_svg_{slide_idx}'
 
     # ── 1. 注入 slide XML ──
     tree = etree.parse(slide_path)
     root = tree.getroot()
 
-    pic_xml = f'''<p:pic
-        xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
-        xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-        xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-      <p:nvPicPr>
-        <p:cNvPr id="{100 + slide_idx}" name="SVG Image {slide_idx}"/>
-        <p:cNvPicPr>
-          <a:picLocks noChangeAspect="1"/>
-        </p:cNvPicPr>
-        <p:nvPr/>
-      </p:nvPicPr>
-      <p:blipFill>
-        <a:blip r:embed="{rel_id}"/>
-        <a:stretch><a:fillRect/></a:stretch>
-      </p:blipFill>
-      <p:spPr>
-        <a:xfrm>
-          <a:off x="0" y="0"/>
-          <a:ext cx="{slide_w}" cy="{slide_h}"/>
-        </a:xfrm>
-        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
-      </p:spPr>
-    </p:pic>'''
+    if has_png:
+        # 双轨结构：PNG 主图 + SVG 扩展层
+        pic_xml = f'''<p:pic
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main">
+          <p:nvPicPr>
+            <p:cNvPr id="{100 + slide_idx}" name="SVG Image {slide_idx}"/>
+            <p:cNvPicPr>
+              <a:picLocks noChangeAspect="1"/>
+            </p:cNvPicPr>
+            <p:nvPr/>
+          </p:nvPicPr>
+          <p:blipFill>
+            <a:blip r:embed="{rel_id_png}">
+              <a:extLst>
+                <a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">
+                  <asvg:svgBlip r:embed="{rel_id_svg}"/>
+                </a:ext>
+              </a:extLst>
+            </a:blip>
+            <a:stretch><a:fillRect/></a:stretch>
+          </p:blipFill>
+          <p:spPr>
+            <a:xfrm>
+              <a:off x="0" y="0"/>
+              <a:ext cx="{slide_w}" cy="{slide_h}"/>
+            </a:xfrm>
+            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          </p:spPr>
+        </p:pic>'''
+    else:
+        # 纯 SVG（无 PNG 时退化为简单引用）
+        pic_xml = f'''<p:pic
+            xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+            xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:nvPicPr>
+            <p:cNvPr id="{100 + slide_idx}" name="SVG Image {slide_idx}"/>
+            <p:cNvPicPr>
+              <a:picLocks noChangeAspect="1"/>
+            </p:cNvPicPr>
+            <p:nvPr/>
+          </p:nvPicPr>
+          <p:blipFill>
+            <a:blip r:embed="{rel_id_svg}"/>
+            <a:stretch><a:fillRect/></a:stretch>
+          </p:blipFill>
+          <p:spPr>
+            <a:xfrm>
+              <a:off x="0" y="0"/>
+              <a:ext cx="{slide_w}" cy="{slide_h}"/>
+            </a:xfrm>
+            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
+          </p:spPr>
+        </p:pic>'''
 
     sp_tree = root.find(
         './/{http://schemas.openxmlformats.org/presentationml/2006/main}spTree'
@@ -169,22 +228,23 @@ def _inject_svg_into_slide(tmpdir, slide_idx, svg_filename):
         sp_tree.append(etree.fromstring(pic_xml))
         tree.write(slide_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 2. 更新 .rels（Bug 1 fix: 相对路径）──
+    # ── 2. 更新 .rels（PNG + SVG 两条关系）──
     rels_tree = etree.parse(rels_path)
     rels_root = rels_tree.getroot()
+    img_type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
 
-    new_rel = etree.SubElement(rels_root, 'Relationship')
-    new_rel.set('Id', rel_id)
-    new_rel.set(
-        'Type',
-        'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
-    )
-    new_rel.set('Target', f'../media/{svg_filename}')  # ← Bug 1 修复
+    for rel_id, target in [
+        (rel_id_png, f'../media/{png_filename}'),
+        (rel_id_svg, f'../media/{svg_filename}'),
+    ]:
+        el = etree.SubElement(rels_root, 'Relationship')
+        el.set('Id', rel_id)
+        el.set('Type', img_type)
+        el.set('Target', target)
 
     rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 3. [Content_Types].xml 的 svg 条目已由 render_e 统一处理，
-    #    此处不再操作（避免 Bug 2：重复插入）
+    # ── 3. Content_Types 已在 _ensure_content_types 统一处理 ──
 
 
 def _add_notes(slide, text):
