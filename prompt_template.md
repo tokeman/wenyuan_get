@@ -21,6 +21,8 @@
     - 🌿 森林墨: ink=#1a2e1f, paper=#f5f1e8（自然/文化）
     - 🍂 牛皮纸: ink=#2a1e13, paper=#eedfc7（人文/怀旧）
     - 🌙 沙丘: ink=#1f1a14, paper=#f0e6d2（艺术/设计）
+  - 企业版（华为风格，白色背景 + 暗红标题）：
+    - 🟥 华为亮白: bg=#FFFFFF, title=#990000, body=#333333, accent=#002FA7, teal=#00857C, light_bg=#F2F4F7, border=#D9DEE3, brand_red=#C7000B
 - 排版: 四宫格（痛点-验证-机制-效果）或三栏（背景-机制-结果）
 - 字体: "Noto Sans CJK SC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif（必须支持中日韩字符）
 - 图形: 纯 SVG 绘制矩形、圆、箭头、雷达简图、点阵
