@@ -8,11 +8,19 @@
 - 分辨率: viewBox="0 0 1280 720"（宽屏 PPT 比例）
 - 背景: 纯白或极浅冷灰 #F5F7FA
 - 卡片阴影: feDropShadow 弥散阴影
-- 配色（四选一，随机）:
-  - Theme A: 深空蓝 #1565c0 + 科技蓝 #42a5f5
-  - Theme B: 珊瑚红 #e53935 + 浅绯红 #ef9a9a
-  - Theme C: 翠绿 #00897b + 青蓝 #26a69a
-  - Theme D: 天际蓝 #0288d1 + 浅蓝 #4fc3f7
+- 配色（九选一，用户指定或随机）:
+  - 沿用版（A-E，兼容历史配置）：
+    - Theme A: 深空蓝 #1565c0 + 科技蓝 #42a5f5
+    - Theme B: 珊瑚红 #e53935 + 浅绯红 #ef9a9a
+    - Theme C: 翠绿 #00897b + 青蓝 #26a69a
+    - Theme D: 天际蓝 #0288d1 + 浅蓝 #4fc3f7
+    - Theme E: 红太阳 #E53935 渐变到 #FF6B35 / #FF1744（视觉冲击）
+  - 杂志风版（guizang 五套主题，衬线排版，克制优雅）：
+    - 🖋 墨水经典: ink=#0a0a0b, paper=#f1efea（通用/商业）
+    - 🌊 靛蓝瓷: ink=#0a1f3d, paper=#f1f3f5（科技/研究）
+    - 🌿 森林墨: ink=#1a2e1f, paper=#f5f1e8（自然/文化）
+    - 🍂 牛皮纸: ink=#2a1e13, paper=#eedfc7（人文/怀旧）
+    - 🌙 沙丘: ink=#1f1a14, paper=#f0e6d2（艺术/设计）
 - 排版: 四宫格（痛点-验证-机制-效果）或三栏（背景-机制-结果）
 - 字体: "Noto Sans CJK SC", "Noto Sans CJK TC", "WenQuanYi Micro Hei", sans-serif（必须支持中日韩字符）
 - 图形: 纯 SVG 绘制矩形、圆、箭头、雷达简图、点阵

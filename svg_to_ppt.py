@@ -37,10 +37,18 @@ def render_r(svg_blocks, output_file):
     prs.slide_height = Inches(9)
 
     for i, svg in enumerate(svg_blocks):
-        # Fix: replace Arial with CJK-compatible font before rendering
+        # Fix: replace fonts with CJK-compatible versions (Pango fallback issue)
         svg = svg.replace(
             'font-family="Arial, sans-serif"',
             'font-family="Noto Sans CJK SC, Arial, sans-serif"'
+        )
+        svg = svg.replace(
+            'font-family="Noto Serif SC, serif"',
+            'font-family="Noto Serif CJK SC, serif"'
+        )
+        svg = svg.replace(
+            'font-family="Noto Sans SC, sans-serif"',
+            'font-family="Noto Sans CJK SC, sans-serif"'
         )
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         try:
@@ -93,9 +101,17 @@ def render_e(svg_blocks, output_file):
             png_filename = f'image_{slide_idx}_fallback.png'
 
             # Fix: 替换字体使中文正常显示
-            svg_fixed = svg.replace(
+            svg_fixed = svg_fixed.replace(
                 'font-family="Arial, sans-serif"',
                 'font-family="Noto Sans CJK SC, Arial, sans-serif"'
+            )
+            svg_fixed = svg_fixed.replace(
+                'font-family="Noto Serif SC, serif"',
+                'font-family="Noto Serif CJK SC, serif"'
+            )
+            svg_fixed = svg_fixed.replace(
+                'font-family="Noto Sans SC, sans-serif"',
+                'font-family="Noto Sans CJK SC, sans-serif"'
             )
 
             # 写 SVG 文件（用修复后的字体）
