@@ -2,8 +2,8 @@
 
 ## 概述
 
-**工具名称：** wenyan_get / wenyuan_get
-**功能：** 输入论文关键词，通过 AI 自动检索、生成 SVG 可视化报告卡片，并打包为 PPTX 文件
+**工具名称：** wenyuan_get
+**功能：** 输入论文关键词，通过 AI 自动生成 SVG 可视化报告卡片，并打包为 PPTX 文件
 **定位：** 科研工作者和 AI 研究者的论文汇报辅助工具
 
 ---
@@ -13,7 +13,8 @@
 1. **全自动**：输入关键词 → 输出可编辑 PPTX，全程无需手动排版
 2. **高质量 SVG**：1280×720 宽屏比例，专业的四宫格/三栏布局
 3. **离线渲染**：SVG → PNG → PPTX 全部本地执行，无 API 依赖
-4. **Gemini 加持**：联网检索最新论文，自动提炼核心信息
+4. **多模型支持**：Gemini CLI（免费联网检索）/ DeepSeek API（稳定可控）
+5. **主题定制**：支持华为亮白等多种企业级配色主题
 
 ---
 
@@ -23,16 +24,18 @@
 用户输入（关键词）
     │
     ▼
-┌─────────────────┐
-│ Gemini CLI      │  ← 联网检索论文 + 生成 SVG
-│ (gemini -p)    │
-└────────┬────────┘
+┌─────────────────────────────┐
+│ LLM 生成层（可插拔）          │
+│  • Gemini CLI（默认，联网）   │
+│  • DeepSeek API（需配置key）  │
+└────────┬────────────────────┘
          │ output.md (含SVG代码)
          ▼
-┌─────────────────┐
-│ Python 脚本     │  ← 本地渲染，无API调用
-│ svg_to_ppt.py   │
-└────────┬────────┘
+┌─────────────────────────────┐
+│ svg_to_ppt.py（本地渲染）    │
+│  • R 版本：PNG 渲染版        │
+│  • E 版本：SVG+PNG 双轨版   │
+└────────┬────────────────────┘
          │ *.pptx
          ▼
     最终输出文件
@@ -45,10 +48,13 @@
 ### 输入
 - 关键词/主题（字符串）
 - 可选：指定论文列表
+- 可选：主题名称（--theme）
+- 可选：模型名称（--model）
 
 ### 输出
-- `AI_Paper_Report.pptx` — 16:9 宽屏幻灯片
-- 每页一张 SVG 卡片（可拖入 PowerPoint 直接使用）
+- `*_R.pptx` — PNG 渲染版，兼容性最强
+- `*_E.pptx` — SVG+PNG 双轨版，飞书/邮件转发不白屏（PPT 2021+ 显示矢量）
+- `output.md` — LLM 生成的原始 SVG 代码
 
 ---
 
@@ -59,10 +65,10 @@
 | 分辨率 | 1280×720（宽屏 PPT 比例） |
 | 背景 | 纯白或极浅冷灰（#F5F7FA） |
 | 卡片阴影 | feDropShadow 弥散阴影 |
-| 配色 | 十套主题：5套杂志风 + 5套企业版 + 4套沿用版(A/B/C/D/E) |
+| 配色 | 主题化：华为亮白 + 更多企业主题 |
 | 排版 | 四宫格或三栏（自动选择） |
 | 图形 | 纯 SVG 绘制：矩形、圆、箭头、雷达简图 |
-| 字体 | font-family="Noto Sans CJK SC, sans-serif"（中文必须），英文标题用 "Noto Serif CJK SC, serif" |
+| 字体 | font-family="Noto Sans CJK SC, sans-serif"（中文必须） |
 
 ---
 
@@ -88,24 +94,38 @@
 
 ### 1. wenyuan_get.sh（主入口）
 ```bash
-wenyuan_get <关键词> [论文1] [论文2] ...
+wenyuan_get.sh <关键词> [--theme "主题名"] [--model "模型名"] [-R|-E|-B]
 ```
-- 生成 prompt.txt
-- 调用 gemini -p
-- 输出到 output.md
+- 解析命令行参数
+- 调用 Python 构建 prompt（兼容多字节字符）
+- 调用 LLM 生成 SVG（Gemini CLI 或 DeepSeek API）
+- 调用 svg_to_ppt.py 输出 PPTX
 
 ### 2. svg_to_ppt.py（渲染器）
 ```bash
-python3 svg_to_ppt.py [input.md] [output.pptx]
+python3 svg_to_ppt.py [input.md] [output_prefix] ["R"|"E"|"B"]
 ```
-- 读取 Markdown 文件中的 SVG 代码块
-- 渲染为 1920×1080 PNG
-- 打包为 16:9 PPTX
+- **R 版本**：cairosvg 渲染为 PNG，最佳兼容性
+- **E 版本**：SVG + PNG 双轨嵌入，PowerPoint 2021+ 显示矢量，飞书/邮件降级 PNG
 
-### 3. prompt.txt（Prompt 模板）
+### 3. prompt_template.md（Prompt 模板）
 - 内置 Role 定义
 - SVG 格式规范
 - 用户指定的论文/关键词
+
+### 4. config.json（DeepSeek API 配置）
+```json
+{
+  "deepseek": {
+    "api_key": "YOUR_KEY_HERE",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat"
+  }
+}
+```
+
+### 5. themes/（主题目录）
+- `huawei_light_corporate.md` — 华为亮白企业主题
 
 ---
 
@@ -113,14 +133,16 @@ python3 svg_to_ppt.py [input.md] [output.pptx]
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| Gemini CLI | latest | AI 生成（需联网） |
+| Gemini CLI | latest | AI 生成（默认，联网免费） |
+| DeepSeek API | — | AI 生成（可选，稳定可控） |
 | python-pptx | ≥0.6.0 | PPTX 生成 |
 | cairosvg | ≥2.9.0 | SVG → PNG 转码 |
 
 安装命令：
 ```bash
 pip install python-pptx cairosvg
-gemini --auth  # 完成认证
+gemini --auth  # Gemini CLI 认证（一次性）
+# DeepSeek API: 创建 config.json 填入 key 即可
 ```
 
 ---
@@ -128,19 +150,16 @@ gemini --auth  # 完成认证
 ## 使用流程
 
 ```bash
-# 方式一：命令行（推荐）
-wenyuan_get "multilingual LLM alignment"
+# 方式一：Gemini CLI（默认，免费联网）
+./wenyuan_get.sh "DeepSeek V4" --theme "华为亮白" -B
 
-# 方式二：指定论文
-wenyuan_get "multilingual" \
-  "C-Mining: Cultural Synthetic Data Generation" \
-  "The Illusion of Multilingual Data Mixtures"
+# 方式二：DeepSeek API（稳定可控）
+./wenyuan_get.sh "DeepSeek V4" --model "deepseek-chat" -B
 
-# 方式三：Python 直接调用
-python3 -c "
-from wenyuan_get import generate
-generate(keywords='BCI neural interfaces', papers=[...])
-"
+# 方式三：指定具体论文
+./wenyuan_get.sh "BCI neural interfaces" \
+  "Neural Digital Twins for Brain-Computer Interfaces" \
+  "EEG Foundation Models: A Survey"
 ```
 
 ---
@@ -148,13 +167,38 @@ generate(keywords='BCI neural interfaces', papers=[...])
 ## 目录结构
 
 ```
-~/.openclaw/workspace/tools/wenyuan_get/
-├── wenyuan_get.sh       # 主入口脚本
-├── svg_to_ppt.py        # 渲染脚本
-├── prompt_template.md   # Prompt 模板
-├── DESIGN.md           # 本文档
-└── README.md          # 使用说明
+wenyuan_get/
+├── wenyuan_get.sh           # 主入口脚本（含 DeepSeek/Gemini 双支持）
+├── svg_to_ppt.py            # 渲染脚本（R/E 双版本）
+├── prompt_template.md       # Prompt 模板
+├── config.example.json      # DeepSeek API 配置示例
+├── config.json              # DeepSeek API 配置（本地）
+├── themes/                  # 主题配色方案
+│   └── huawei_light_corporate.md
+├── DESIGN.md                # 本文档
+└── README.md                # 使用说明
 ```
+
+---
+
+## R/E 双版本说明
+
+| 版本 | 生成方式 | 适用场景 |
+|------|----------|----------|
+| **R**（Rendered） | cairosvg 渲染为 PNG | 兼容性最强，任何环境均正常显示 |
+| **E**（Editable） | SVG+PNG 双轨嵌入 | PPT 2021+ 显示矢量；飞书/邮件转发显示 PNG |
+
+### E 版本双轨原理
+
+```
+PowerPoint 解析流程：
+1. 读取主 blip → PNG（图层保底）
+2. 检查 extLst/svgBlip → 发现 SVG 扩展
+3. PPT 2021+ 优先渲染 SVG（矢量，可取消组合编辑）
+4. 旧版/飞书/邮件 → 自动降级 PNG 显示
+```
+
+PNG 渲染失败时，主 blip 自动降级指向 SVG，避免悬空引用报错。
 
 ---
 
@@ -164,17 +208,13 @@ generate(keywords='BCI neural interfaces', papers=[...])
 |------|----------|-------------|
 | 速度 | 手动搜索+排版 2h+ | 全自动 3min |
 | 格式 | 复制粘贴截图 | 矢量 SVG 直接用 |
-| 可编辑 | 截图无法改 | 保留 SVG 结构 |
-| 成本 | $5-20 API 费 | Gemini 免费配额 |
-| 部署 | 需要 API Key | 纯本地 CLI |
+| 可编辑 | 截图无法改 | E版本可取消组合编辑 |
+| 成本 | $5-20 API 费 | Gemini 免费 / DeepSeek 低成本 |
+| 部署 | 需要 API Key | 零配置（Gemini）或 config.json（DeepSeek） |
 
 ---
 
-
-
----
-
-## 企业版主题（2026-04-26 新增）
+## 企业版主题
 
 ### 🟥 华为亮白（华为 PPT 风格）
 
@@ -191,9 +231,14 @@ generate(keywords='BCI neural interfaces', papers=[...])
 
 详细规范见 `themes/huawei_light_corporate.md`
 
-## 版本计划
+---
 
-- **v1.0**：基础流程跑通
-- **v1.1**：多论文并行生成
-- **v1.2**：自定义配色/布局选项
-- **v2.0**：支持更多输出格式（PDF、Keynote）
+## 版本历史
+
+| 版本 | 日期 | 变化 |
+|------|------|------|
+| v1.0 | 2026-04 | 基础流程跑通 |
+| v1.1 | 2026-04 | 多论文并行生成 |
+| v1.2 | 2026-04-26 | 企业版主题（华为亮白等）|
+| v1.3 | 2026-04-29 | **DeepSeek API 支持（--model参数）** |
+| v1.3 | 2026-04-29 | **E版本 SVG+PNG 双轨 Bug修复** |
