@@ -101,7 +101,7 @@ def render_e(svg_blocks, output_file):
             png_filename = f'image_{slide_idx}_fallback.png'
 
             # Fix: 替换字体使中文正常显示
-            svg_fixed = svg_fixed.replace(
+            svg_fixed = svg.replace(
                 'font-family="Arial, sans-serif"',
                 'font-family="Noto Sans CJK SC, Arial, sans-serif"'
             )
@@ -173,7 +173,9 @@ def _ensure_content_types(tmpdir, include_png=True):
         for el in ct_root.findall(f'{{{svg_ct_ns}}}Default')
     }
 
+    # 始终注册 SVG
     types_to_add = [('svg', 'image/svg+xml')]
+    # 仅在有 PNG 文件时才注册 PNG 类型
     if include_png:
         types_to_add.append(('png', 'image/png'))
 
@@ -190,16 +192,13 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
     """
     双轨注入：slide XML + .rels
 
-    结构：
-      PNG 作为主 blip（兼容性保底）
-      SVG 作为 extLst 扩展层（矢量覆盖，PowerPoint 2021+ 优先渲染）
-
-    has_png=False 时退化为纯 SVG 引用，不写入 PNG 关系。
+    结构：PNG 作主 blip（兼容性保底）+ SVG 作 extLst 矢量扩展层（PPT 2021+ 优先渲染）
+    PNG 不可用时主 blip 改指向 SVG，避免悬空引用导致 PowerPoint 报错。
     """
     slide_path = os.path.join(tmpdir, 'ppt', 'slides', f'slide{slide_idx}.xml')
     rels_path  = os.path.join(tmpdir, 'ppt', 'slides', '_rels', f'slide{slide_idx}.xml.rels')
 
-    slide_w, slide_h = 12192000, 6858000   # EMU: 16×9 inches
+    slide_w, slide_h = 14630400, 8229600   # EMU: 40.64×22.86 inches (full cover)
     rel_id_png = f'rId_png_{slide_idx}'
     rel_id_svg = f'rId_svg_{slide_idx}'
 
@@ -208,7 +207,6 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
     root = tree.getroot()
 
     if has_png:
-        # 双轨结构：PNG 主图 + SVG 扩展层
         pic_xml = f'''<p:pic
             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
             xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
@@ -240,11 +238,12 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
           </p:spPr>
         </p:pic>'''
     else:
-        # 纯 SVG（PNG 生成失败时退化）
+        # PNG 不可用时：主 blip 和 svgBlip 都指向 SVG，确保所有引用都有效
         pic_xml = f'''<p:pic
             xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
             xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
-            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+            xmlns:asvg="http://schemas.microsoft.com/office/drawing/2016/SVG/main">
           <p:nvPicPr>
             <p:cNvPr id="{100 + slide_idx}" name="SVG Image {slide_idx}"/>
             <p:cNvPicPr>
@@ -253,7 +252,13 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
             <p:nvPr/>
           </p:nvPicPr>
           <p:blipFill>
-            <a:blip r:embed="{rel_id_svg}"/>
+            <a:blip r:embed="{rel_id_svg}">
+              <a:extLst>
+                <a:ext uri="{{96DAC541-7B7A-43D3-8B79-37D633B846F1}}">
+                  <asvg:svgBlip r:embed="{rel_id_svg}"/>
+                </a:ext>
+              </a:extLst>
+            </a:blip>
             <a:stretch><a:fillRect/></a:stretch>
           </p:blipFill>
           <p:spPr>
@@ -272,26 +277,25 @@ def _inject_svg_png_dual(tmpdir, slide_idx, svg_filename, png_filename, has_png)
         sp_tree.append(etree.fromstring(pic_xml))
         tree.write(slide_path, xml_declaration=True, encoding='UTF-8', standalone=True)
 
-    # ── 2. 更新 .rels（按 has_png 决定写几条关系）──
+    # ── 2. 更新 .rels ──
     rels_tree = etree.parse(rels_path)
     rels_root = rels_tree.getroot()
     img_type = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image'
 
-    # 构造需要写入的关系列表：has_png=False 时只写 SVG 那条
-    rels_to_add = []
+    # PNG 关系（仅在 PNG 文件存在时写入，避免悬空引用）
     if has_png:
-        rels_to_add.append((rel_id_png, f'../media/{png_filename}'))
-    rels_to_add.append((rel_id_svg, f'../media/{svg_filename}'))
+        el_png = etree.SubElement(rels_root, 'Relationship')
+        el_png.set('Id', rel_id_png)
+        el_png.set('Type', img_type)
+        el_png.set('Target', f'../media/{png_filename}')
 
-    for rel_id, target in rels_to_add:
-        el = etree.SubElement(rels_root, 'Relationship')
-        el.set('Id', rel_id)
-        el.set('Type', img_type)
-        el.set('Target', target)
+    # SVG 关系（始终写入）
+    el_svg = etree.SubElement(rels_root, 'Relationship')
+    el_svg.set('Id', rel_id_svg)
+    el_svg.set('Type', img_type)
+    el_svg.set('Target', f'../media/{svg_filename}')
 
     rels_tree.write(rels_path, xml_declaration=True, encoding='UTF-8', standalone=True)
-
-    # Content_Types 已由 _ensure_content_types 统一处理，此处无需操作
 
 
 def _add_notes(slide, text):
